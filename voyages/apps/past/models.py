@@ -7,7 +7,8 @@ import operator
 
 class EnslaverInfoAbstractBase(models.Model):
     principal_alias = models.CharField(max_length=255)
-
+	is_corporate_entity = models.BooleanField()
+	
     # Personal info.
     birth_year = models.IntegerField(null=True)
     birth_month = models.IntegerField(null=True)
@@ -36,6 +37,35 @@ class EnslaverInfoAbstractBase(models.Model):
     class Meta:
         abstract = True
 
+class EnslavementRelation(models.Model):
+    class Relation:
+        TRANSPORTED_BY = 1
+        OWNED_BY = 2
+        SOLD_TO = 3
+        SOLD_BY = 4
+        INSURED_BY = 5
+        INSURED_ON_BEHALF_OF = 6
+        INVESTED_IN_BY = 7
+        SUPPLIED_BY = 8
+    relation_start_date = models.DateField(auto_now_add=True)
+    relation_end_date = models.DateField(auto_now_add=True)
+
+class EnslavementRelationSourceConnection(models.Model)
+	identity = models.ForeignKey(EnslavementRelation, on_delete=models.CASCADE)
+	source = models.ForeignKey(VoyageSources, related_name="+", null=False)
+    source_order = models.IntegerField()
+    text_ref = models.CharField(max_length=255, null=False, blank=True)
+    
+class EnslaverEnslaverConnection(models.Model):
+	source = models.ForeignKey(EnslaverIdentity, on_delete=models.CASCADE)
+	target = models.ForeignKey(EnslaverIdentity, on_delete=models.CASCADE)
+	relation = models.ForeignKey(EnslavementRelation, on_delete=models.CASCADE)
+	
+class EnslaverEnslavedConnection(models.Model):
+	enslaver = models.ForeignKey(EnslaverIdentity, on_delete=models.CASCADE)
+	enslaved = models.ForeignKey(EnslavedIdentity, on_delete=models.CASCADE)
+	relation = models.ForeignKey(EnslavementRelation, on_delete=models.CASCADE)
+	
 class EnslaverIdentity(EnslaverInfoAbstractBase):
     class Meta:
         verbose_name = 'Enslaver unique identity and personal info'
@@ -87,6 +117,9 @@ class EnslaverVoyageConnection(models.Model):
         OWNER = 2
         BUYER = 3
         SELLER = 4
+        INSURER = 5
+        INVESTOR = 6
+        SUPPLIER = 7
 
     enslaver_alias = models.ForeignKey('EnslaverAlias', null=False, on_delete=models.CASCADE)
     voyage = models.ForeignKey('voyage.Voyage', null=False, on_delete=models.CASCADE)
