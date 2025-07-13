@@ -226,99 +226,119 @@ def publish_accepted_contributions(log_file, skip_backup=False):
 
     transaction_finished = False
     transaction_started = False
-    try:
-        # Step 1 - Backup database
-        if not skip_backup:
-            log('Backing up all data.\n')
-            with open(settings.MEDIA_ROOT + '/db.json', 'w') as f:
-                management.call_command('dumpdata', stdout=f)
-            log('Finished backup.\n')
-
-        log('Fetching contributions...\n')
-        (review_requests,
-         _) = _fetch_active_reviews_by_status([ContributionStatus.approved])
-        log('Publishing...\n')
-        # Step 2 - Publish database
-        all_deleted_ids = []
-        transaction_started = True
-        with transaction.atomic():
-            count = 0
-            for req in review_requests:
-                # Basic validation.
-                count += 1
-                log('Processing ' + req.contribution_id + '\n')
-                if req.final_decision != (
-                        ReviewRequestDecision.accepted_by_editor):
-                    raise Exception(
-                        'Review cannot be published since it was not accepted '
-                        'by editor'
-                    )
-                if req.contribution_id.startswith('delete'):
-                    _publish_single_review_delete(req, all_deleted_ids)
-                elif req.contribution_id.startswith('merge'):
-                    _publish_single_review_merge(req, all_deleted_ids)
-                elif req.contribution_id.startswith('new'):
-                    _publish_single_review_new(req)
-                elif req.contribution_id.startswith('edit'):
-                    _publish_single_review_update(req)
-                else:
-                    raise Exception('Unexpected contribution type')
-                contribution = req.contribution()
-                contribution.status = ContributionStatus.published
-                contribution.save()
-                req.archived = True
-                req.save()
-        transaction_finished = True
-        log('Finished all publications.\n')
-        log('Total published: ' + str(count) + '.\n')
-        # Step 3 - Update solr index.
-        log('Updating solr index.\n')
-        # Take care of deleted documents first.
+    
+    completed_contribution_ids=[]
+    bad_contribution_ids=[]
+    
+    failures=0
+    
+    while failures < 10:
+        
         try:
-            entry = settings.HAYSTACK_CONNECTIONS.get('default')
-            solr_url = entry.get('URL') if entry else None
-            if solr_url:
-                solr_url += '/update'
-                headers = {'Content-type': 'text/xml'}
-
-                def post(data):
-                    return requests.post(solr_url, data, headers=headers)
-
-                def post_delete_request(voyage_id):
-                    r = post('<delete><query>'
-                             f'var_voyage_id:{voyage_id}</query></delete>')
-                    if r.status_code != 200:
-                        log('Failed to delete Solr record for '
-                            'voyage_id ' + str(voyage_id) + ' '
-                            'response code: ' + str(r.status_code))
-                        return
-                    r = post('<commit />')
-                    if r.status_code != 200:
-                        log('Failed to commit deletion for Solr record for '
-                            'voyage_id ' + str(voyage_id) + ' '
-                            'response code: ' + str(r.status_code))
-
-                for voyage_id in all_deleted_ids:
-                    post_delete_request(voyage_id)
-        except Exception:
-            pass
-        management.call_command('update_index',
-                                'voyage.voyage',
-                                age=24,
-                                stdout=log_file)
-        log('Solr index is now updated.\n')
-        return True
-    except Exception as exception:
-        log('An error occurred.\n')
-        if transaction_started and not transaction_finished:
-            transaction.rollback()
-            log('Database transaction was rolledback.\n')
-        log(str(exception))
-        log(traceback.format_exc())
-        return False
-    finally:
-        log('EOF')
-        log_file.close()
+            # Step 1 - Backup database
+            if not skip_backup:
+                log('Backing up all data.\n')
+                with open(settings.MEDIA_ROOT + '/db.json', 'w') as f:
+                    management.call_command('dumpdata', stdout=f)
+                log('Finished backup.\n')
+    
+            log('Fetching contributions...\n')
+            (review_requests,
+             _) = _fetch_active_reviews_by_status([ContributionStatus.approved])
+            log('Publishing...\n')
+            # Step 2 - Publish database
+            all_deleted_ids = []
+            transaction_started = True
+            with transaction.atomic():
+                count = 0
+                for req in review_requests:
+                	#checkpointing
+                    if req.contribution_id not in bad_contribution_ids + completed_contribution_ids:
+                        # Basic validation.
+                        count += 1
+                        log('Processing ' + req.contribution_id + '\n')
+                        if req.final_decision != (
+                                ReviewRequestDecision.accepted_by_editor):
+                            raise Exception(
+                                'Review cannot be published since it was not accepted '
+                                'by editor'
+                            )
+                        if req.contribution_id.startswith('delete'):
+                            _publish_single_review_delete(req, all_deleted_ids)
+                        elif req.contribution_id.startswith('merge'):
+                            _publish_single_review_merge(req, all_deleted_ids)
+                        elif req.contribution_id.startswith('new'):
+                            _publish_single_review_new(req)
+                        elif req.contribution_id.startswith('edit'):
+                            _publish_single_review_update(req)
+                        else:
+                            raise Exception('Unexpected contribution type')
+                        contribution = req.contribution()
+                        contribution.status = ContributionStatus.published
+                        contribution.save()
+                        req.archived = True
+                        req.save()
+                        completed_contribution_ids.append(req.contribution_id)
+                    else:
+                        log(f"skipping {req.contribution_id}\n")
+            transaction_finished = True
+            log('Finished all publications.\n')
+            log('Total published: ' + str(count) + '.\n')
+            # Step 3 - Update solr index.
+            log('Updating solr index.\n')
+            break
+            # Take care of deleted documents first.
+            try:
+                entry = settings.HAYSTACK_CONNECTIONS.get('default')
+                solr_url = entry.get('URL') if entry else None
+                if solr_url:
+                    solr_url += '/update'
+                    headers = {'Content-type': 'text/xml'}
+    
+                    def post(data):
+                        return requests.post(solr_url, data, headers=headers)
+    
+                    def post_delete_request(voyage_id):
+                        r = post('<delete><query>'
+                                 f'var_voyage_id:{voyage_id}</query></delete>')
+                        if r.status_code != 200:
+                            log('Failed to delete Solr record for '
+                                'voyage_id ' + str(voyage_id) + ' '
+                                'response code: ' + str(r.status_code))
+                            return
+                        r = post('<commit />')
+                        if r.status_code != 200:
+                            log('Failed to commit deletion for Solr record for '
+                                'voyage_id ' + str(voyage_id) + ' '
+                                'response code: ' + str(r.status_code))
+    
+                    for voyage_id in all_deleted_ids:
+                        post_delete_request(voyage_id)
+            except Exception:
+                pass
+            management.call_command('update_index',
+                                    'voyage.voyage',
+                                    age=24,
+                                    stdout=log_file)
+            log('Solr index is now updated.\n')
+            return True
+        except Exception as exception:
+            log('An error occurred.\n')
+            if transaction_started and not transaction_finished:
+                transaction.rollback()
+                log('Database transaction was rolledback.\n')
+            log(str(exception))
+            log(traceback.format_exc())
+            contribution_id=req.contribution_id
+            bad_contribution_ids.append(contribution_id)
+            log(str(bad_contribution_ids))
+            failures+=1
+            
+#             return False
+#         finally:
+#             log('EOF')
+#             log_file.close()
+#             break
 
 
 def _delete_child_fk(obj, child_attr):
